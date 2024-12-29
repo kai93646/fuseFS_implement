@@ -4,11 +4,13 @@ from stat import S_IFDIR, S_IFREG, S_IFLNK      #S_IFDIR: directory, S_IFREG: re
 from errno import ENOENT, EEXIST
 from collections import defaultdict
 from sys import argv
+from encrypt import AESCipher
 
 class SimpleFS(Operations):
     def __init__(self):
         self.metadata:dict[str, bytes] = {}
         self.data = defaultdict(bytes)      #if the index reqired is not exist in dict, then print the null value
+        self.keys = defaultdict(bytes)
         self.fd = 0                         #file descriptor
         now = time()
         self.metadata['/'] = dict(st_mode=(S_IFDIR | 0o755), st_nlink=2, st_ctime=now, st_mtime=now, st_atime=now) 
@@ -23,21 +25,30 @@ class SimpleFS(Operations):
         print('create', path)
         self.metadata[path] = dict(st_mode=(S_IFREG | mode), st_nlink=1, st_size=0, st_ctime=time(), st_mtime=time(), st_atime=time())
         self.fd += 1
+        self.keys[path] = AESCipher.add_key()
+        print(self.data[path])
         return self.fd
 
     def read(self, path, size, offset, fh):
-        return self.data[path][offset:offset + size]        #catch the index of path and read the data from offset to size
+        target = AESCipher.decrypt(self.data[path], self.keys[path]) #decrypt the data
+        return target[offset:offset + size]        #catch the index of path and read the data from offset to size
 
     def write(self, path, buf, offset, fh):
-        self.data[path] = (
+        if self.data[path] != b'':
+            target = AESCipher.decrypt(self.data[path], self.keys[path]) #decrypt the data
+        else:
+            target = b''
+        print(target)
+        target = (
             # make sure the data gets inserted at the right offset
-            self.data[path][:offset].ljust(offset, '\x00'.encode('ascii'))
+            target[:offset].ljust(offset, '\x00'.encode('ascii'))
             + buf
             # and only overwrites the bytes that data is replacing
-            + self.data[path][offset + len(buf):])
+            + target[offset + len(buf):])
             #insert the data in buffer from offset to offset+len
-        self.metadata[path]['st_size'] = len(self.data[path]) #update the size of the file
+        self.metadata[path]['st_size'] = len(target) #update the size of the file
         self.metadata[path]['st_mtime'] = time()              #update the modification time
+        self.data[path] = AESCipher.encrypt(target, self.keys[path]) #encrypt the data
         return len(buf)
 
     def open(self, path, flags):
@@ -52,7 +63,11 @@ class SimpleFS(Operations):
 
     def truncate(self, path, length, fd=None):
         print('truncate', path, length)
-        self.data[path] = self.data[path][:length] #divide the path's size to length
+        if self.data[path] != b'':
+            target = AESCipher.decrypt(self.data[path], self.keys[path]) #decrypt the data
+        else:
+            target = b''
+        target = target[:length] #divide the path's size to length
         self.metadata[path]['st_size'] = length    #specify the size of the file
         self.metadata[path]['st_mtime'] = time()
 
